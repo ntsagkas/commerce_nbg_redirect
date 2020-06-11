@@ -128,8 +128,8 @@ function commerce_nbg_redirect_settings_form($settings = NULL) {
   variable_set('nbg_public_key', $settings['nbg_public_key']);
   variable_set('nbg_private_key', $settings['nbg_private_key']);
   variable_set('nbg_encrypt_secret', $settings['nbg_encrypt_secret']);
-  variable_get("nbg_merchant_name",$settings['nbg_merchant_name']);
-  variable_get("nbg_cancelation_policy",$settings['nbg_cancelation_policy']);
+  variable_set("nbg_merchant_name",$settings['nbg_merchant_name']);
+  variable_set("nbg_cancelation_policy",$settings['nbg_cancelation_policy']);
  
 
  
