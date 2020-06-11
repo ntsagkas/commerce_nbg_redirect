@@ -1,3 +1,5 @@
+----- USE IT AT YOUR OWN RISK - NOT APPROVED OR AFFILIATED BY NBG OR SIMPLIFY -------
+
 Redirection payment for Drupal Commerce and NBG (Greece).
 By using redirection payments your clients get redirect to the bank and fill in
 their credit card data there. No information is stored at the Drupal side.
