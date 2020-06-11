@@ -1,0 +1,387 @@
+<?php
+
+/**
+ * @file
+ * Provides Redirection Payment method with Nbg for Drupal Commerce.
+ */
+
+// URLs.
+define('AB_PAY_COMPLETED', 'checkout/nbg/success');
+define('AB_PAY_ERROR', 'checkout/nbg/error');
+
+/**
+ * Implements hook_menu().
+ */
+function commerce_nbg_redirect_menu() {
+  $items = array();
+
+  $items[AB_PAY_COMPLETED] = array(
+    'title' => 'Order complete',
+    'page callback' => 'commerce_nbg_redirect_complete',
+    'page arguments' => array(),
+    'access callback' => 'commerce_nbg_redirect_completion_access',
+    'type' => MENU_CALLBACK,
+    'file' => 'commerce_nbg_redirect.pages.inc',
+  );
+
+  $items[AB_PAY_ERROR] = array(
+    'title' => 'Order complete',
+    'page callback' => 'commerce_nbg_redirect_error',
+    'page arguments' => array(),
+    'access callback' => 'commerce_nbg_redirect_completion_access',
+    'type' => MENU_CALLBACK,
+    'file' => 'commerce_nbg_redirect.pages.inc',
+  );
+
+  return $items;
+}
+
+/**
+ * Make sure anyone can complete their orders through NBG.
+ */
+function commerce_nbg_redirect_completion_access() {
+  return TRUE;
+}
+
+/**
+ * Implements hook_static_checkout_url_links().
+ */
+function commerce_nbg_redirect_static_checkout_url_links() {
+  return array(
+    'Nbg: return link after success' => AB_PAY_COMPLETED,
+    'Nbg: return link after cancelation' => AB_PAY_ERROR,
+  );
+}
+
+/**
+ * Implements hook_commerce_payment_method_info().
+ */
+function commerce_nbg_redirect_commerce_payment_method_info() {
+  $payment_methods = array();
+
+  $payment_methods['commerce_nbg_redirect'] = array(
+    'base' => 'commerce_nbg_redirect',
+    'title' => t('Credit card - on a secure environment provided by Nbg Greece'),
+    'display' => t('Credit Card'),
+    'short_title' => t('Nbg'),
+    'description' => t('Integration with Nbg using redirection.'),
+    'active' => TRUE,
+    'offsite' => TRUE,
+    'offsite_autoredirect' => commerce_static_checkout_url_get_auto_redirect(),
+  );
+
+  return $payment_methods;
+}
+
+/**
+ * Settings form, uUsed to set vendor name and secret key within Rules settings.
+ */
+function commerce_nbg_redirect_settings_form($settings = NULL) {
+  $form = array();
+
+
+  $settings = (array) $settings + array(
+    'nbg_public_key' => '',
+    'nbg_private_key' => '',
+    'nbg_encrypt_secret' => '',
+    'nbg_merchant_name' => '',
+    'nbg_cancelation_policy' => '',
+  );
+
+  $form['nbg_public_key'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Hosted Payments Public Key'),
+    '#required' => TRUE,
+    '#default_value' => $settings['nbg_public_key'],
+  );
+
+  $form['nbg_private_key'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Hosted Payments Private Key'),
+    '#required' => TRUE,
+    '#default_value' => $settings['nbg_private_key'],
+  );
+
+  $form['nbg_encrypt_secret'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Encryption Key'),
+    '#description' => t('Choose your own. E.g.:').'mysecretKey1',
+    '#required' => TRUE,
+    '#default_value' => $settings['nbg_encrypt_secret'],
+  );
+
+  $form['nbg_merchant_name'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Merchant Name'),
+    '#required' => TRUE,
+    '#default_value' => $settings['nbg_merchant_name'],
+  );
+
+  $form['nbg_cancelation_policy'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Cancelation Policy Short Decription'),
+    '#required' => TRUE,
+    '#default_value' => $settings['nbg_cancelation_policy'],
+  );
+
+
+  variable_set('nbg_public_key', $settings['nbg_public_key']);
+  variable_set('nbg_private_key', $settings['nbg_private_key']);
+  variable_set('nbg_encrypt_secret', $settings['nbg_encrypt_secret']);
+  variable_get("nbg_merchant_name",$settings['nbg_merchant_name']);
+  variable_get("nbg_cancelation_policy",$settings['nbg_cancelation_policy']);
+ 
+
+ 
+
+  return $form;
+}
+
+
+/**
+ * Payment method callback: submit form.
+ */
+function commerce_nbg_redirect_submit_form($payment_method, $pane_values, $checkout_pane, $order) {
+  $form = array();
+
+  if (!empty($payment_method['settings']['payment_method_description'])) {
+    $form['commerce_nbg_redirect_description'] = array(
+      '#markup' => t($payment_method['settings']['payment_method_description'])
+    );
+  }
+
+  return $form;
+}
+
+/**
+ * Implements hook_redirect_form().
+ */
+function commerce_nbg_redirect_redirect_form($form, &$form_state, $order, $payment_method) {
+  $settings = array();
+
+  // // Return an error if the enabling action's settings haven't been configured.
+  // if (empty($payment_method['settings']['mid'])) {
+  //   drupal_set_message(t('Nbg Form Integration is not configured for use. Merchant has not been specified.'), 'error');
+  //   return array();
+  // }
+
+  $wrapper = entity_metadata_wrapper('commerce_order', $order);
+  $total = commerce_line_items_total($wrapper->commerce_line_items);
+
+
+  if ($total['currency_code'] != 'EUR') {
+    drupal_set_message(t('Current Site Currency is not supported by Nbg proxy pay'), 'error');
+    return array();
+  }
+
+
+  $settings['currency_code'] = 'EUR';
+  $settings['instance_id'] = $payment_method['instance_id'];
+
+  return commerce_nbg_redirect_order_form($form, $form_state, $order, $total, $payment_method['settings'] + $settings);
+}
+
+/**
+ * Creates the Nbg Form.
+ */
+function commerce_nbg_redirect_order_form($form, &$form_state, $order, $total, $settings) {
+    require_once(dirname(__FILE__) ."/SimpleCrypt.inc"); 
+    global $base_url;
+
+    $crypt_key=$settings['nbg_encrypt_secret'];
+    $public_key=$settings['nbg_public_key'];
+
+    $order_id=$order->order_id;
+    $merchant_ref=SimpleCrypt::encrypt($order_id, $crypt_key,true);
+    //dsm($merchant_ref);
+    //dsm(SimpleCrypt::decrypt($merchant_ref, $crypt_key,true));
+
+
+    
+    $charge = $total['amount'];
+
+
+    
+    // $order_desc=t('items') .':';
+    // foreach ($order->commerce_line_items['und'] as $key => $li_id) {
+    //   $li=commerce_line_item_load($li_id['line_item_id']);
+    //   $order_desc.=' '.$li->line_item_label;
+    // }
+    
+
+    $form['submit'] = array(
+    '#type' => 'markup',
+    '#weigh'=> 100,
+    '#markup'=> '<script type="text/javascript"
+                src="https://www.simplify.com/commerce/simplify.pay.js"></script>
+                <button data-sc-key="'.$public_key.'"
+                data-name="'.t('Provide your payment info').'"
+                data-description="order: '.$order->order_id .'"
+                data-reference="'.$merchant_ref .'"
+                data-amount="'.$charge .'"
+                data-redirect-url="'.$base_url.'/checkout/nbg/success"
+                data-color="#12B830">
+                '.t('Pay securely via NBG Simplify').'
+                </button>
+                <script>
+                    SimplifyCommerce.hostedPayments(
+                        function(response) {
+                            console.log(response);
+                            // add your custom handler code here
+                        }
+                    ).closeOnCompletion();
+                </script>
+                <style>.checkout-help {display: none !important;}</style>',
+  );
+   
+
+
+  return $form;
+}
+
+
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ */
+function commerce_nbg_redirect_form_commerce_checkout_form_alter(&$form, &$form_state) {
+  if (!empty($form['commerce_payment']['payment_method']['#options'])) {
+    foreach ($form['commerce_payment']['payment_method']['#options'] as $key => &$value) {
+      list($method_id, $rule_name) = explode('|', $key);
+      if ($method_id == 'commerce_nbg_redirect') {
+        $nbg_banks_icon = drupal_get_path('module', 'commerce_nbg_redirect') . '/images/nbg-banks-icon.png';
+        $value .= '<div class="commerce-nbg-redirect-icons"><span class="label">' . t('Includes:') . '</span><img src="' . file_create_url($nbg_banks_icon) . '" alt="" class="commerce-nbg-redirect-icon" /></div>';
+        $form['commerce_payment']['payment_method']['#attached']['css'][] = drupal_get_path('module', 'commerce_nbg_redirect') . '/css/commerce_nbg_redirect.css';
+        break;
+      }
+    }
+  }
+
+  if (isset($form['#theme'][0]) && $form['#theme'][0] == 'commerce_checkout_form_complete') {
+
+    global $base_url;
+
+    $form['#attached']['css'][] = drupal_get_path('module', 'commerce_nbg_redirect') . '/css/commerce_nbg_redirect.css';
+
+    $completed_order_id = $form_state['order']->order_id;
+    $completed_order_load = commerce_order_load($completed_order_id);
+
+    $completed_order_payment_method = $form_state['order']->data['payment_method'];
+    list($method_id, $rule_name) = explode('|', $completed_order_payment_method);
+
+    $customer_profile_types = commerce_customer_profile_types();
+    $customer_profile_types = array_keys($customer_profile_types);
+
+    $billing_customer_profile_types = array();
+
+    $completed_order_line_item_ids = $completed_order_load->commerce_line_items[LANGUAGE_NONE];
+    $completed_order_line_item_titles = array();
+
+    foreach ($completed_order_line_item_ids as $completed_order_line_item_id) {
+        $commerce_line_item_load = commerce_line_item_load($completed_order_line_item_id['line_item_id']);
+        $commerce_line_item_product_load = isset($commerce_line_item_load->commerce_product[LANGUAGE_NONE][0]['product_id']) ? commerce_product_load($commerce_line_item_load->commerce_product[LANGUAGE_NONE][0]['product_id']) : '';
+        if (!empty($commerce_line_item_product_load->title)) {
+          $completed_order_line_item_titles[] = $commerce_line_item_product_load->title;
+        }
+    }
+
+    foreach ($customer_profile_types as $customer_profile_type) {
+        if (strpos($customer_profile_type, 'billing') !== FALSE) {
+            $billing_customer_profile_types[] = $customer_profile_type;
+        }
+    }
+
+    if (!empty($billing_customer_profile_types) && $method_id == 'commerce_nbg_redirect') {
+        foreach ($billing_customer_profile_types as $billing_customer_profile_type) {
+            if (!empty($completed_order_load->{'commerce_customer_' . $billing_customer_profile_type})) {
+                $commerce_customer_profile_id = $completed_order_load->{'commerce_customer_' . $billing_customer_profile_type}[LANGUAGE_NONE][0]['profile_id'];
+            }
+        }
+
+        if (!empty($commerce_customer_profile_id)) {
+
+            $commerce_customer_profile_load = commerce_customer_profile_load($commerce_customer_profile_id);
+
+            $completed_order_payments = commerce_payment_transaction_load_multiple(array(), array('order_id' =>  $completed_order_id));
+            $completed_order_payment = !empty($completed_order_payments) ? array_shift($completed_order_payments) : '';
+            $completed_order_payment_payload = array_shift($completed_order_payment->payload);
+
+            $nbg_merchant_name = variable_get("nbg_merchant_name");
+            $nbg_merchant_name_trim = trim($nbg_merchant_name);
+
+            $nbg_cancelation_policy = variable_get("nbg_cancelation_policy");
+            $nbg_cancelation_policy_trim = trim($nbg_cancelation_policy);
+
+            $transaction_receipt_values = array(
+                array('label' => t('Purchaser name'), 'value' => !empty($commerce_customer_profile_load->commerce_customer_address[LANGUAGE_NONE][0]['name_line']) ? $commerce_customer_profile_load->commerce_customer_address[LANGUAGE_NONE][0]['name_line'] : ''),
+                array('label' => t('Order id'), 'value' => $completed_order_id),
+                array('label' => t('Merchant name'), 'value' => !empty($nbg_merchant_name_trim) ? $nbg_merchant_name_trim : ''),
+                array('label' => t('Merchant on-line address'), 'value' => $base_url),
+                array('label' => t('Description of merchantise - services'), 'value' => !empty($completed_order_line_item_titles) ? implode(", ", $completed_order_line_item_titles) : ''),
+                array('label' => t('Transaction amount'), 'value' => !empty($completed_order_load->commerce_order_total[LANGUAGE_NONE][0]['amount']) ? commerce_currency_format($completed_order_load->commerce_order_total[LANGUAGE_NONE][0]['amount'], $completed_order_load->commerce_order_total[LANGUAGE_NONE][0]['currency_code']) : ''),
+                array('label' => t('Transaction date'), 'value' => !empty($completed_order_payment->created) ? date("d/m/Y - H:i:s", $completed_order_payment->created) : ''),
+                array('label' => t('Currency'), 'value' => !empty($completed_order_payment_payload['currency']) ? $completed_order_payment_payload['currency'] : ''),
+                array('label' => t('Authorization code'), 'value' => !empty($completed_order_payment_payload['authCode']) ? $completed_order_payment_payload['authCode'] : ''),
+                array('label' => t('Electronic commerce'), 'value' => 'Electronic commerce'),
+                array('label' => t('Cancellation policy'), 'value' => !empty($nbg_cancelation_policy_trim) ? t($nbg_cancelation_policy_trim) : ''),
+            );
+
+            $form['transaction_receipt'] = array(
+                '#type' => 'item',
+                '#markup' => theme('commerce_nbg_redirect_transaction_receipt_output', $transaction_receipt_values),
+                '#weight' => 10,
+            );
+        }
+    }
+  }
+}
+
+function commerce_nbg_redirect_theme() {
+  return array(
+    'commerce_nbg_redirect_transaction_receipt_output' => array(
+      'variables' => array(),
+    ),
+  );
+}
+
+function theme_commerce_nbg_redirect_transaction_receipt_output($variables) {
+  if (!empty($variables['theme_hook_original'])) {
+    unset($variables['theme_hook_original']);
+  }
+
+  $output = NULL;
+
+  if (!empty($variables)) {
+    $header = array(
+      array('data' => t('Transaction receipt'), 'colspan' => 2),
+    );
+
+    $rows = array();
+    foreach ($variables as $variable) {
+      $rows[] = array(
+        array('data' => $variable['label'], 'class' => 'title'),
+        array('data' => $variable['value'], 'class' => 'value'),
+      );
+    }
+
+    $output = '<div id="transaction-receipt" class="transaction-receipt">';
+    $output .= theme('table', array(
+        'header' => $header,
+        'rows' => $rows,
+      )
+    );
+
+    $output .= '<div class="transaction-receipt-actions">';
+    $output .= l(t('Print transaction receipt'), '', array(
+        'fragment' => 'edit-transaction-receipt',
+        'external' => TRUE,
+        'attributes' => array(
+          'onclick' => 'window.print();',
+        ),
+      )
+    );
+    $output .= '</div></div>';
+  }
+  
+  return $output;
+}
